@@ -2,31 +2,31 @@
 
 import subprocess
 from argparse import ArgumentParser
-import logging, re
+import logging, csv
 from collections import namedtuple
 import os.path
+from typing import Generator
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-Label = namedtuple('Label', ['start', 'end', 'text'])
+Label = namedtuple('Label', ['start', 'duration', 'text'])
 
-def labels(path: str):
-    contents = None
+def labels(path: str) -> Generator[Label, None, None]:
     with open(path) as f:
-        contents = f.read()
-
-    it = re.finditer('(\d+\.\d+)\t(\d+\.\d+)\t([^\n]*)', contents)
-
-    for label in it:
-        yield Label(start=float(label.group(1)),
-                    end=float(label.group(2)),
-                    text=label.group(3))
+        reader = csv.reader(f, delimiter='\t')
+        for start_s, end_s, text in reader:
+            start = float(start_s)
+            end = float(end_s)
+            duration = end - start
+            yield Label(start=start,
+                        duration=duration,
+                        text=text)
 
 
 def extract(old: str, new: str, start: float, duration: float):
     bitrate = 320
-    subprocess.call([
+    retval = subprocess.call([
         'sox',
         old,
         '-C', str(bitrate),
@@ -35,9 +35,10 @@ def extract(old: str, new: str, start: float, duration: float):
         str(start),
         str(duration)
     ])
+    if retval != 0: raise Exception('sox returned {}'.format(retval))
 
 
-def tag(path: str, artist=None, title=None, album=None, track=None):
+def tag(path: str, artist=None, title=None, album=None, track:int=None):
     cmd = ['mid3v2']
 
     if artist:
@@ -50,11 +51,14 @@ def tag(path: str, artist=None, title=None, album=None, track=None):
         cmd.extend(['-A', album])
 
     if track:
-        cmd.extend(['-T', track])
+        cmd.extend(['-T', str(track)])
 
     cmd.append(path)
 
-    subprocess.call(cmd)
+    retval = subprocess.call(cmd)
+
+    if retval != 0: raise Exception('mid3v2 subprocess retured {}'.format(retval))
+    
 
 
 def main():
@@ -68,24 +72,23 @@ def main():
 
     args = parser.parse_args()
 
-    for i, label in enumerate(labels(args.labels), 1):
+    for track, label in enumerate(labels(args.labels), 1):
 
-        new_name = '{0:02d}.mp3'.format(i)
+        new_name = '{0:02d}.mp3'.format(track)
 
         dest = os.path.join(args.target_dir, new_name)
 
-        duration = label.end - label.start
-
         logger.info('Creating {}'.format(dest))
 
-        extract(args.audiofile, dest, label.start, duration)
+        extract(args.audiofile, dest, label.start, label.duration)
 
         logger.info('Tagging {}'.format(dest))
 
         tag(dest,
             artist=args.artist,
-            title=str(i),
-            album=args.album)
+            title=label.text,
+            album=args.album,
+            track=track)
     
 
 if __name__ == '__main__':
